@@ -9,8 +9,11 @@
 //! content groups at all.
 //!
 //! If your pdf viewer supports these, you should see a layer "Parent Layer",
-//! with 2 sublayers "Grid", and "Hexagon". Toggling the parent layer off hides both it's children.
-//! While each sublayer can be toggled on and off independently.
+//! with 3 sublayers "Grid", and "Hexagon", "Square". Toggling the parent layer off all it's children.
+//!
+//! The grid and shape layers can be toggled independently. While only one of the shape layers
+//! may be visible at any time, selecting the square or hexagon layer acts like a radio button.
+//! Both can be toggled off, but only one can be visible at any time.
 use pdf_writer::{
     writers::Catalog, writers::Page, Content, Finish, Name, Pdf, Rect, Ref, Str,
 };
@@ -27,6 +30,8 @@ struct Layers {
     subgroup: Ref,
     grid: Ref,
     hexagon: Ref,
+    square: Ref,
+    rb_group_ref: Ref,
 }
 
 fn main() -> std::io::Result<()> {
@@ -35,11 +40,17 @@ fn main() -> std::io::Result<()> {
     let page_tree_id = gen_ref();
     let page_id = gen_ref();
     let content_stream_id = gen_ref();
+    let rb_group_ref: Ref = gen_ref();
+    let hexagon: Ref = gen_ref();
+    let square: Ref = gen_ref();
+    pdf.indirect(rb_group_ref).array().items([square, hexagon]).finish();
     let layers = Layers {
         parent: gen_ref(),
         subgroup: gen_ref(),
         grid: gen_ref(),
-        hexagon: gen_ref(),
+        hexagon,
+        square,
+        rb_group_ref,
     };
     layers.setup_subgroup(&mut pdf);
     let mut catalog = pdf.catalog(catalog_id);
@@ -82,6 +93,14 @@ fn main() -> std::io::Result<()> {
             .operand(Name(b"HexagonLayer"))
             .finish();
         draw_hexagon(&mut content);
+        content.end_marked_content();
+
+        // Square layer
+        content
+            .begin_marked_content_with_properties(Name(b"OC"))
+            .operand(Name(b"SquareLayer"))
+            .finish();
+        draw_square(&mut content);
         content.end_marked_content();
     }
     content.end_marked_content();
@@ -127,9 +146,23 @@ fn draw_hexagon(content: &mut Content) {
     content.stroke();
 }
 
+fn draw_square(content: &mut Content) {
+    content.set_line_width(6.0);
+    content.set_stroke_rgb(0.5, 0.2, 0.8);
+
+    content.move_to(150.0, 150.0);
+    content.line_to(250.0, 150.0);
+    content.line_to(250.0, 250.0);
+    content.line_to(150.0, 250.0);
+    content.close_path();
+    content.stroke();
+}
+
 impl Layers {
     fn setup_subgroup(&self, pdf: &mut Pdf) {
-        pdf.indirect(self.subgroup).array().items([self.grid, self.hexagon]);
+        pdf.indirect(self.subgroup)
+            .array()
+            .items([self.grid, self.hexagon, self.square]);
     }
     fn make_oc_properties(&self, catalog: &mut Catalog) {
         let mut oc_props = catalog.insert(Name(b"OCProperties")).dict();
@@ -137,6 +170,7 @@ impl Layers {
             self.parent,
             self.grid,
             self.hexagon,
+            self.square,
         ]);
 
         let mut d_dict = oc_props.insert(Name(b"D")).dict();
@@ -145,15 +179,17 @@ impl Layers {
             .array()
             .items([self.parent, self.grid, self.hexagon]);
 
+        d_dict.insert(Name(b"OFF")).array().items([self.square]);
         let mut order = d_dict.insert(Name(b"Order")).array();
         order.item(self.parent);
         order.item(self.subgroup);
         order.finish();
 
-        d_dict
-            .insert(Name(b"Locked"))
-            .array()
-            .items([self.grid, self.hexagon]);
+        // Set the square and hexagon to be mutually exclusive layers acting like a radio button
+        let mut rb_groups = d_dict.insert(Name(b"RBGroups")).array();
+        rb_groups.item(self.rb_group_ref);
+        rb_groups.finish();
+
         d_dict.finish();
         oc_props.finish();
     }
@@ -185,6 +221,13 @@ impl Layers {
             .pair(Name(b"Name"), Str(b"Hexagon"))
             .pair(Name(b"Parent"), self.parent)
             .finish();
+
+        pdf.indirect(self.square)
+            .dict()
+            .pair(Name(b"Type"), Name(b"OCG"))
+            .pair(Name(b"Name"), Str(b"Square"))
+            .pair(Name(b"Parent"), self.parent)
+            .finish();
     }
 
     fn make_page_resources(&self, page: &mut Page) {
@@ -194,6 +237,7 @@ impl Layers {
         ocg_dict.pair(Name(b"ParentLayer"), self.parent);
         ocg_dict.pair(Name(b"GridLayer"), self.grid);
         ocg_dict.pair(Name(b"HexagonLayer"), self.hexagon);
+        ocg_dict.pair(Name(b"SquareLayer"), self.square);
         ocg_dict.finish();
         res.finish();
     }
